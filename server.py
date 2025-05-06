@@ -1,21 +1,23 @@
+import os
 from flask import Flask, request
 from flask_socketio import SocketIO, emit
 
 app = Flask(__name__)
 socketio = SocketIO(app, cors_allowed_origins="*", logger=False, engineio_logger=False)
 
-# Track connected clients to /get_data
 get_data_clients = set()
 
-# /gun WebSocket endpoint
+# --- HTTP route for health check ---
+@app.route('/')
+def health_check():
+    return "✅ WebSocket server is up and running!", 200
+
+# --- WebSocket: /gun ---
 @socketio.on('message', namespace='/gun')
 def handle_gun_message(message):
     print(f"[GUN] Received: {message}")
-    
-    # Send ACK back to /gun sender
     emit('ack', "ACK: Message received")
 
-    # Broadcast to all /get_data clients
     for sid in list(get_data_clients):
         try:
             socketio.emit('gun_data', message, namespace='/get_data', to=sid)
@@ -32,8 +34,7 @@ def on_gun_connect():
 def on_gun_disconnect():
     print(f"[GUN] Disconnected: {request.sid}")
 
-
-# /get_data WebSocket endpoint
+# --- WebSocket: /get_data ---
 @socketio.on('connect', namespace='/get_data')
 def on_get_data_connect():
     print(f"[GET_DATA] Connected: {request.sid}")
@@ -44,7 +45,8 @@ def on_get_data_disconnect():
     print(f"[GET_DATA] Disconnected: {request.sid}")
     get_data_clients.discard(request.sid)
 
-
+# --- Main Entry ---
 if __name__ == '__main__':
-    print("[SERVER] WebSocket server running at ws://0.0.0.0:8080 (paths: /gun, /get_data)")
-    socketio.run(app, host='0.0.0.0', port=8080)
+    port = int(os.environ.get("PORT", 8080))
+    print(f"[SERVER] WebSocket server running at ws://0.0.0.0:{port} (paths: /gun, /get_data)")
+    socketio.run(app, host='0.0.0.0', port=port)
