@@ -1,76 +1,50 @@
-import asyncio
-import websockets
-import json
+from flask import Flask, request
+from flask_socketio import SocketIO, emit
 
-# Store clients connected to /get_data
+app = Flask(__name__)
+socketio = SocketIO(app, cors_allowed_origins="*", logger=False, engineio_logger=False)
+
+# Track connected clients to /get_data
 get_data_clients = set()
 
-# Validate incoming WebSocket path
-async def process_request(path, request_headers):
-    if path not in ["/gun", "/get_data"]:
-        return (
-            403,
-            [("Content-Type", "text/plain")],
-            b"Forbidden: Invalid WebSocket path\n"
-        )
-    return None
+# /gun WebSocket endpoint
+@socketio.on('message', namespace='/gun')
+def handle_gun_message(message):
+    print(f"[GUN] Received: {message}")
+    
+    # Send ACK back to /gun sender
+    emit('ack', "ACK: Message received")
 
-# Handle /gun connections
-async def gun_handler(websocket):
-    print(f"[GUN] Client connected from {websocket.remote_address}")
-    try:
-        async for message in websocket:
-            print(f"[GUN] Received message: {message}")
+    # Broadcast to all /get_data clients
+    for sid in list(get_data_clients):
+        try:
+            socketio.emit('gun_data', message, namespace='/get_data', to=sid)
+            print(f"[GUN] Relayed to /get_data: {sid}")
+        except Exception as e:
+            print(f"[GUN] Failed to send to {sid}: {e}")
+            get_data_clients.discard(sid)
 
-            await websocket.send("ACK: Message received")
+@socketio.on('connect', namespace='/gun')
+def on_gun_connect():
+    print(f"[GUN] Connected: {request.sid}")
 
-            # Broadcast to /get_data
-            dead_clients = []
-            for client in list(get_data_clients):
-                try:
-                    await client.send(json.dumps(message))
-                    print(f"[GUN] Sent to /get_data: {message}")
-                except Exception as e:
-                    print(f"[GUN] Failed to send to a /get_data client: {e}")
-                    dead_clients.append(client)
-
-            for dc in dead_clients:
-                print(f"[GUN] Removing dead /get_data client: {dc.remote_address}")
-                get_data_clients.discard(dc)
-
-    except websockets.ConnectionClosed:
-        print(f"[GUN] Disconnected: {websocket.remote_address}")
+@socketio.on('disconnect', namespace='/gun')
+def on_gun_disconnect():
+    print(f"[GUN] Disconnected: {request.sid}")
 
 
-# Handle /get_data connections
-async def get_data_handler(websocket):
-    print(f"[GET_DATA] Client connected from {websocket.remote_address}")
-    get_data_clients.add(websocket)
-    try:
-        await websocket.wait_closed()
-    finally:
-        print(f"[GET_DATA] Client disconnected: {websocket.remote_address}")
-        get_data_clients.discard(websocket)
+# /get_data WebSocket endpoint
+@socketio.on('connect', namespace='/get_data')
+def on_get_data_connect():
+    print(f"[GET_DATA] Connected: {request.sid}")
+    get_data_clients.add(request.sid)
 
-# Dispatcher
-async def handler(websocket, path):
-    if path == "/gun":
-        await gun_handler(websocket)
-    elif path == "/get_data":
-        await get_data_handler(websocket)
+@socketio.on('disconnect', namespace='/get_data')
+def on_get_data_disconnect():
+    print(f"[GET_DATA] Disconnected: {request.sid}")
+    get_data_clients.discard(request.sid)
 
-# Start the server
-async def main():
-    async with websockets.serve(
-        handler,
-        "0.0.0.0",
-        8080,
-        process_request=process_request,
-        ping_interval=10,
-        ping_timeout=30
-    ):
-        print("[SERVER] WebSocket server running at ws://0.0.0.0:8080 (paths: /gun, /get_data)")
-        await asyncio.Future()  # run forever
 
-if __name__ == "__main__":
-    asyncio.run(main())
+if __name__ == '__main__':
+    print("[SERVER] WebSocket server running at ws://0.0.0.0:8080 (paths: /gun, /get_data)")
+    socketio.run(app, host='0.0.0.0', port=8080)
